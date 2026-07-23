@@ -3,7 +3,7 @@
  * @description Reciprocal Rank Fusion (RRF) Hybrid Search Engine combining BM25 Keyword Search & Cosine Similarity Vector Embedding.
  */
 
-import { RAGDocumentChunk, Citation, GroundedContextPayload, RRFSearchResult } from '../../types/rag';
+import { RAGDocumentChunk, Citation, GroundedContextPayload, RRFSearchResult, RetrievalState, EmbeddingMode } from '../../types/rag';
 import { getEmbedding, cosineSimilarity } from './embeddingService';
 import { fetchEuropePmcArticles } from './sources/europePmc';
 import { fetchClinicalTrials } from './sources/clinicalTrials';
@@ -47,7 +47,11 @@ export async function executeHybridRAGSearch(
   const candidateMap = new Map<string, RAGDocumentChunk>();
   STATIC_CORPUS.forEach((chunk) => candidateMap.set(chunk.id, chunk));
 
-  // 2. Fetch live data from open APIs asynchronously
+  // 2. Fetch live data from open APIs asynchronously.
+  // liveSourceFetchFailed feeds retrieval-state derivation below — a failure here means
+  // the result is running on static/cached corpus only, which must surface as 'degraded',
+  // not be silently presented as a fully live, grounded search.
+  let liveSourceFetchFailed = false;
   try {
     const fetchKeyword = categoryKeyword || searchTerms[0] || 'fertility';
     const [pmcChunks, trialChunks, fdaChunks] = await Promise.all([
@@ -62,6 +66,7 @@ export async function executeHybridRAGSearch(
     });
   } catch (e) {
     console.warn('Live API fetch encountered error, relying on static/cached corpus:', e);
+    liveSourceFetchFailed = true;
   }
 
   const allCandidates = Array.from(candidateMap.values());
@@ -70,19 +75,26 @@ export async function executeHybridRAGSearch(
       formattedPromptContext: 'No relevant medical literature or regulatory data found in index.',
       citations: [],
       chunks: [],
-      maxSimilarity: 0,
-      isGrounded: false,
-      hasDataGap: true,
+      topSimilarity: 0,
+      retrievalState: 'data-gap',
+      embeddingMode: 'semantic',
     };
   }
 
-  // 3. Compute Vector Embedding for Query & Chunks
-  const queryEmbedding = await getEmbedding(cleanQuery);
+  // 3. Compute Vector Embedding for Query & Chunks.
+  // embeddingMode tracks whether ANY embedding in this search used the non-semantic
+  // fallback vectorizer — if so, the whole result is 'degraded', never silently 'grounded'.
+  let embeddingMode: EmbeddingMode = 'semantic';
+  const queryResult = await getEmbedding(cleanQuery);
+  if (queryResult.mode === 'fallback') embeddingMode = 'fallback';
+  const queryEmbedding = queryResult.vector;
 
   const scoredCandidates = await Promise.all(
     allCandidates.map(async (chunk) => {
       if (!chunk.embedding) {
-        chunk.embedding = await getEmbedding(chunk.text);
+        const chunkResult = await getEmbedding(chunk.text);
+        if (chunkResult.mode === 'fallback') embeddingMode = 'fallback';
+        chunk.embedding = chunkResult.vector;
       }
       const similarity = cosineSimilarity(queryEmbedding, chunk.embedding);
       const bm25 = computeBM25Score(chunk, searchTerms);
@@ -113,6 +125,7 @@ export async function executeHybridRAGSearch(
       vectorRank: rVector,
       rrfScore,
       similarityScore: item.similarity,
+      bm25Score: item.bm25,
     };
   });
 
@@ -120,9 +133,23 @@ export async function executeHybridRAGSearch(
   const topResults = rrfResults.sort((a, b) => b.rrfScore - a.rrfScore).slice(0, topK);
 
   const selectedChunks = topResults.map((r) => r.chunk);
-  const maxSimilarity = Math.max(...topResults.map((r) => r.similarityScore), 0);
-  const isGrounded = maxSimilarity >= 0.40 || topResults.some((r) => (r.bm25Rank || 100) <= 2);
-  const hasDataGap = !isGrounded || maxSimilarity < 0.30;
+  const topSimilarity = Math.max(...topResults.map((r) => r.similarityScore), 0);
+
+  // Retrieval state is derived from real signals only — never a fabricated confidence number.
+  // Fallback (non-semantic) embeddings can never produce 'grounded', regardless of similarity
+  // score, because a hash-bucket vectorizer's "similarity" is not a meaningful signal.
+  // NOTE: bm25Rank alone is not evidence of relevance — with a small candidate pool, a
+  // chunk can rank #1 with a BM25 score of 0 (no keyword overlap at all). Relevance
+  // requires an actual non-zero BM25 score, not merely a low rank among few candidates.
+  const hasRelevantMatch = topSimilarity >= 0.40 || topResults.some((r) => r.bm25Score > 0 && (r.bm25Rank || 100) <= 2);
+  let retrievalState: RetrievalState;
+  if (!hasRelevantMatch) {
+    retrievalState = 'data-gap';
+  } else if (embeddingMode === 'fallback' || liveSourceFetchFailed) {
+    retrievalState = 'degraded';
+  } else {
+    retrievalState = 'grounded';
+  }
 
   // 7. Format Prompt Context Payload & Citations
   const citations: Citation[] = selectedChunks.map((c, i) => {
@@ -152,8 +179,8 @@ export async function executeHybridRAGSearch(
     formattedPromptContext,
     citations,
     chunks: selectedChunks,
-    maxSimilarity,
-    isGrounded,
-    hasDataGap,
+    topSimilarity,
+    retrievalState,
+    embeddingMode,
   };
 }
