@@ -1,0 +1,47 @@
+name: secure-backend
+
+# Path-scoped: only runs when server/ code, frontend source, or this workflow
+# changes. No secrets, no network calls, no live Gemini API calls — typecheck +
+# unit tests only. All external calls in tests are mocked (see
+# src/**/*.test.{ts,tsx}); server/index.ts is exercised only via its unit-level
+# helpers (rateLimit.ts), never by starting the process or hitting a live key.
+on:
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vite.config.ts'
+      - '.github/workflows/secure-backend.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vite.config.ts'
+      - '.github/workflows/secure-backend.yml'
+
+jobs:
+  typecheck-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Run frontend test suite (subset-scoped to src/)
+        run: npm run test

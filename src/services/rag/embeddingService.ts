@@ -1,10 +1,10 @@
 /**
  * @file embeddingService.ts
- * @description Generates 768-dimensional vector embeddings using Google GenAI text-embedding-004.
- * Includes a deterministic TF-IDF fallback vectorizer if offline or without API key.
+ * @description Generates 768-dimensional vector embeddings via the backend proxy
+ * (server/index.ts), which holds the Gemini API key. Includes a deterministic
+ * TF-IDF fallback vectorizer if the proxy is unreachable or returns an error.
  */
 
-import { GoogleGenAI } from "@google/genai";
 import { EmbeddingMode } from "../../types/rag";
 
 export interface EmbeddingResult {
@@ -33,7 +33,7 @@ export function cosineSimilarity(vecA: number[], vecB: number[]): number {
 
 /**
  * Fallback lightweight deterministic hashing vectorizer (768 dimensions)
- * Used if network API fails or offline mode is active.
+ * Used if the proxy is unreachable, returns an error, or has no key configured.
  */
 function generateFallbackEmbedding(text: string, dimensions: number = 768): number[] {
   const vec = new Array(dimensions).fill(0);
@@ -62,33 +62,30 @@ function generateFallbackEmbedding(text: string, dimensions: number = 768): numb
 }
 
 /**
- * Generates vector embedding via Gemini API text-embedding-004.
+ * Generates vector embedding via the backend proxy's /api/embed endpoint.
  * Returns which mode produced the vector so callers can surface degraded state
  * instead of silently presenting fallback (non-semantic) vectors as normal.
  */
 export async function getEmbedding(text: string): Promise<EmbeddingResult> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return { vector: generateFallbackEmbedding(text), mode: 'fallback' };
-  }
-
   try {
-    const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.embedContent({
-      model: "text-embedding-004",
-      contents: text.slice(0, 2048), // Cap chunk length
+    const response = await fetch('/api/embed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text.slice(0, 2048) }),
     });
 
-    const res = response as any;
-    if (res.embedding?.values) {
-      return { vector: res.embedding.values, mode: 'semantic' };
+    if (!response.ok) {
+      return { vector: generateFallbackEmbedding(text), mode: 'fallback' };
     }
-    if (res.embeddings?.[0]?.values) {
-      return { vector: res.embeddings[0].values, mode: 'semantic' };
+
+    const data = await response.json();
+    if (Array.isArray(data.vector)) {
+      return { vector: data.vector, mode: 'semantic' };
     }
+
     return { vector: generateFallbackEmbedding(text), mode: 'fallback' };
   } catch (error) {
-    console.warn("Gemini embedding API call failed, using fallback vectorizer:", error);
+    console.warn("Embedding proxy call failed, using fallback vectorizer:", error);
     return { vector: generateFallbackEmbedding(text), mode: 'fallback' };
   }
 }

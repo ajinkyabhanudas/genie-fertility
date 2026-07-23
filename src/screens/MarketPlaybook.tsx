@@ -23,7 +23,7 @@ import {
   Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI } from "@google/genai";
+import { generateContent } from "../services/generateContent";
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { COUNTRY_DETAILS } from '../data/countries';
@@ -197,15 +197,11 @@ export default function MarketPlaybook(props: any) {
     `;
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-      });
+      const text = await generateContent(prompt);
 
       setStepContents(prev => ({
         ...prev,
-        [stepId]: response.text || 'No response generated.'
+        [stepId]: text || 'No response generated.'
       }));
       setGeneratingStepId(null);
     } catch (error) {
