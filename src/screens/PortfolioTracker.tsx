@@ -27,7 +27,7 @@ import {
   ResponsiveContainer, 
   Cell 
 } from 'recharts';
-import { GoogleGenAI } from "@google/genai";
+import { generateContent } from "../services/generateContent";
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { executeHybridRAGSearch } from '../services/rag/hybridSearch';
@@ -208,12 +208,8 @@ const validateRelevanceAI = async (topic: string) => {
   `;
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-    });
-    return (response.text || '').trim().includes('RELEVANT');
+    const text = await generateContent(prompt);
+    return text.trim().includes('RELEVANT');
   } catch (error) {
     return true; // Fallback to allow if API fails
   }
@@ -232,12 +228,8 @@ const reviewProtocolAI = async (indication: string, protocol: any[]) => {
   `;
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-    });
-    return response.text || 'Protocol approved for development.';
+    const text = await generateContent(prompt);
+    return text || 'Protocol approved for development.';
   } catch (error) {
     return "Standard protocol validation successful.";
   }
@@ -278,13 +270,8 @@ const generateAdjacencyData = async (indicationName: string, protocol: any[]) =>
   `;
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-    });
-    
-    const text = response.text || '';
+    const text = await generateContent(prompt);
+
     const jsonStr = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
     const data = JSON.parse(jsonStr);
     if (data.error) throw new Error(data.error);
