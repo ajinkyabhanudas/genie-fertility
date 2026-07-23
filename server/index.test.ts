@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Server } from 'http';
 
-// Mocks the GoogleGenAI SDK entirely — this test makes zero network requests
-// and zero live model calls, per project policy (fixture/mock-only testing,
-// no live API spend). The proxy process itself is started once per test file
-// on an ephemeral port and hit over real HTTP so the express wiring (routing,
-// json body parsing, rate-limit middleware) is exercised, not just the handlers.
+// Mocks the GoogleGenAI SDK and the Postgres pool entirely — this test makes
+// zero network requests, zero live model calls, and touches no real database,
+// per project policy (fixture/mock-only testing, no live API spend). The
+// proxy process itself is started once per test on an ephemeral port and hit
+// over real HTTP so the express wiring (routing, auth, rate-limit middleware)
+// is exercised, not just the handlers.
 const mockEmbedContent = vi.fn();
 const mockGenerateContent = vi.fn();
 
@@ -18,15 +19,64 @@ vi.mock('@google/genai', () => ({
   }),
 }));
 
+// In-memory stand-in for the generation_cache + audit_log tables so route
+// logic (cache lookup, transactional audit write) is exercised without a
+// real database. Each test gets a fresh cache via vi.resetModules().
+let generationCache: Map<string, string>;
+let auditRowCount: number;
+let failNextAuditInsert: boolean;
+
+const mockClient = {
+  query: vi.fn(async (sql: string, params?: any[]) => {
+    if (sql.includes('SELECT response_text FROM generation_cache')) {
+      const key = params?.[0];
+      const cached = generationCache.get(key);
+      return { rows: cached ? [{ response_text: cached }] : [] };
+    }
+    if (sql.includes('SELECT row_hash FROM audit_log')) {
+      return { rows: [] };
+    }
+    if (sql.includes('INSERT INTO audit_log')) {
+      if (failNextAuditInsert) {
+        failNextAuditInsert = false;
+        throw new Error('simulated audit_log insert failure (e.g. constraint violation)');
+      }
+      auditRowCount += 1;
+      return { rows: [] };
+    }
+    if (sql.includes('INSERT INTO generation_cache')) {
+      const [key, text] = params ?? [];
+      generationCache.set(key, text);
+      return { rows: [] };
+    }
+    // BEGIN / COMMIT / ROLLBACK
+    return { rows: [] };
+  }),
+  release: vi.fn(),
+};
+
+vi.mock('./db/pool', () => ({
+  pool: {
+    connect: vi.fn(async () => mockClient),
+    query: vi.fn(async () => ({ rows: [] })),
+  },
+}));
+
 describe('proxy server', () => {
   let server: Server;
   let baseUrl: string;
+  const authHeaders = { 'Content-Type': 'application/json', Authorization: 'Bearer test-auth-token' };
 
   beforeEach(async () => {
     vi.resetModules();
     mockEmbedContent.mockReset();
     mockGenerateContent.mockReset();
+    mockClient.query.mockClear();
+    generationCache = new Map();
+    auditRowCount = 0;
+    failNextAuditInsert = false;
     process.env.GEMINI_API_KEY = 'test-key';
+    process.env.AUTH_TOKEN = 'test-auth-token';
     process.env.PROXY_PORT = '0';
 
     const mod = await import('./index');
@@ -41,7 +91,28 @@ describe('proxy server', () => {
   afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     delete process.env.GEMINI_API_KEY;
+    delete process.env.AUTH_TOKEN;
     delete process.env.PROXY_PORT;
+  });
+
+  it('rejects unauthenticated requests with 401', async () => {
+    const res = await fetch(`${baseUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'hello' }),
+    });
+
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects requests with an invalid bearer token with 401', async () => {
+    const res = await fetch(`${baseUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer wrong-token' },
+      body: JSON.stringify({ prompt: 'hello' }),
+    });
+
+    expect(res.status).toBe(401);
   });
 
   it('POST /api/embed returns a semantic vector on success', async () => {
@@ -49,7 +120,7 @@ describe('proxy server', () => {
 
     const res = await fetch(`${baseUrl}/api/embed`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders,
       body: JSON.stringify({ text: 'hello' }),
     });
 
@@ -61,7 +132,7 @@ describe('proxy server', () => {
   it('POST /api/embed returns 400 when text is missing', async () => {
     const res = await fetch(`${baseUrl}/api/embed`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders,
       body: JSON.stringify({}),
     });
 
@@ -73,7 +144,7 @@ describe('proxy server', () => {
 
     const res = await fetch(`${baseUrl}/api/embed`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders,
       body: JSON.stringify({ text: 'hello' }),
     });
 
@@ -82,38 +153,82 @@ describe('proxy server', () => {
     expect(JSON.stringify(body)).not.toContain('some internal upstream detail');
   });
 
-  it('POST /api/generate returns text on success', async () => {
+  it('POST /api/generate returns text on success and writes one audit row', async () => {
     mockGenerateContent.mockResolvedValue({ text: 'Generated output' });
 
     const res = await fetch(`${baseUrl}/api/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders,
       body: JSON.stringify({ prompt: 'hello' }),
     });
 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.text).toBe('Generated output');
+    expect(auditRowCount).toBe(1);
+  });
+
+  it('returns 500 and leaks no result text when the audit write fails mid-transaction', async () => {
+    mockGenerateContent.mockResolvedValue({ text: 'should never reach the client' });
+    failNextAuditInsert = true;
+
+    const res = await fetch(`${baseUrl}/api/generate`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ prompt: 'audit will fail for this one' }),
+    });
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain('should never reach the client');
+    expect(auditRowCount).toBe(0); // rollback means no partial audit row either
   });
 
   it('POST /api/generate returns 400 when prompt is missing', async () => {
     const res = await fetch(`${baseUrl}/api/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders,
       body: JSON.stringify({}),
     });
 
     expect(res.status).toBe(400);
   });
 
+  it('POST /api/generate serves a cache hit without calling the provider or writing a new audit row', async () => {
+    mockGenerateContent.mockResolvedValue({ text: 'first response' });
+
+    const first = await fetch(`${baseUrl}/api/generate`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ prompt: 'same prompt', query: 'q', country: 'UK', adjacency: 'RIF' }),
+    });
+    expect(first.status).toBe(200);
+    expect(auditRowCount).toBe(1);
+
+    mockGenerateContent.mockClear();
+
+    const second = await fetch(`${baseUrl}/api/generate`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ prompt: 'same prompt', query: 'q', country: 'UK', adjacency: 'RIF' }),
+    });
+    const body = await second.json();
+
+    expect(second.status).toBe(200);
+    expect(body.cacheHit).toBe(true);
+    expect(body.text).toBe('first response');
+    expect(mockGenerateContent).not.toHaveBeenCalled();
+    expect(auditRowCount).toBe(1); // no new row for the cache hit
+  });
+
   it('rate-limits after the configured max requests per window', async () => {
     mockGenerateContent.mockResolvedValue({ text: 'ok' });
 
-    const requests = Array.from({ length: 32 }, () =>
+    const requests = Array.from({ length: 32 }, (_, i) =>
       fetch(`${baseUrl}/api/generate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'x' }),
+        headers: authHeaders,
+        body: JSON.stringify({ prompt: `x-${i}` }), // distinct prompts avoid the cache path
       })
     );
     const responses = await Promise.all(requests);
