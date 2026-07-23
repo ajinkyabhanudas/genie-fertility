@@ -3,14 +3,15 @@
  * @description Slide-over modal component for inspecting grounded references, PubMed PMIDs, ClinicalTrials.gov IDs, and DOIs.
  */
 
-import { X, ExternalLink, BookOpen, ShieldCheck, FileText, CheckCircle2 } from 'lucide-react';
-import { Citation } from '../types/rag';
+import { X, ExternalLink, BookOpen, FileText, CheckCircle2 } from 'lucide-react';
+import { Citation, RetrievalState } from '../types/rag';
+import RetrievalStateBadge, { RETRIEVAL_STATE_CONFIG } from './RetrievalStateBadge';
 
 interface CitationDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   citations: Citation[];
-  confidenceScore?: number;
+  retrievalState: RetrievalState;
   countryName?: string;
   adjacencyName?: string;
 }
@@ -19,7 +20,7 @@ export default function CitationDrawer({
   isOpen,
   onClose,
   citations,
-  confidenceScore = 95,
+  retrievalState,
   countryName,
   adjacencyName,
 }: CitationDrawerProps) {
@@ -35,9 +36,9 @@ export default function CitationDrawer({
               <BookOpen size={20} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">Verified Clinical & Regulatory Sources</h2>
+              <h2 className="text-lg font-bold text-white">Retrieved Sources</h2>
               <p className="text-xs text-brand-mint/50">
-                {countryName && adjacencyName ? `${countryName} • ${adjacencyName}` : 'Grounded RAG Literature Citations'}
+                {countryName && adjacencyName ? `${countryName} • ${adjacencyName}` : 'Hybrid RAG Retrieval Results'}
               </p>
             </div>
           </div>
@@ -49,15 +50,12 @@ export default function CitationDrawer({
           </button>
         </div>
 
-        {/* Confidence Score Strip */}
-        <div className="px-6 py-3 bg-brand-accent/10 border-b border-brand-accent/20 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-xs font-semibold text-brand-mint">
-            <ShieldCheck size={16} className="text-emerald-400" />
-            <span>Anti-Hallucination Grounding Status</span>
-          </div>
-          <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-            {confidenceScore}% Match Confidence
-          </span>
+        {/* Retrieval State Strip */}
+        <div className="px-6 py-3 bg-white/5 border-b border-white/10 flex items-center justify-between gap-3">
+          <p className="text-xs text-brand-mint/70 leading-relaxed">
+            {RETRIEVAL_STATE_CONFIG[retrievalState].description}
+          </p>
+          <RetrievalStateBadge state={retrievalState} className="shrink-0" />
         </div>
 
         {/* Citations List */}

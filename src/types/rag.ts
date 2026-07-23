@@ -38,15 +38,30 @@ export interface RRFSearchResult {
   vectorRank?: number;
   rrfScore: number;
   similarityScore: number;
+  /** Raw BM25 score (not rank) — a low rank among few candidates does not imply
+   * an actual keyword match; only a non-zero score does. */
+  bm25Score: number;
 }
+
+/**
+ * Retrieval trust state — what the UI shows instead of a fabricated confidence score.
+ * 'grounded': semantic embeddings + at least one relevant source found.
+ * 'degraded': fallback (non-semantic) embeddings were used, or a live source fetch failed.
+ * 'data-gap': no relevant sources found at all, regardless of embedding mode.
+ */
+export type RetrievalState = 'grounded' | 'degraded' | 'data-gap';
+
+/** Which embedding path produced the vectors used for this search. */
+export type EmbeddingMode = 'semantic' | 'fallback';
 
 export interface GroundedContextPayload {
   formattedPromptContext: string;
   citations: Citation[];
   chunks: RAGDocumentChunk[];
-  maxSimilarity: number;
-  isGrounded: boolean;
-  hasDataGap: boolean;
+  /** Raw top retrieval similarity signal — NOT a confidence or faithfulness score. */
+  topSimilarity: number;
+  retrievalState: RetrievalState;
+  embeddingMode: EmbeddingMode;
 }
 
 export interface GroundedPlaybookStepResponse {
@@ -54,7 +69,6 @@ export interface GroundedPlaybookStepResponse {
   stepName: string;
   content: string;
   citations: Citation[];
-  confidenceScore: number;
-  hasDataGap: boolean;
+  retrievalState: RetrievalState;
   timestamp: string;
 }
