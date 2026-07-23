@@ -1,4 +1,13 @@
-# Genie Fertility — Market Playbook
+<img src="docs/banner.svg" alt="Genie Fertility" width="100%"/>
+
+[![retrieval-state-ui](https://github.com/ajinkyabhanudas/genie-fertility/actions/workflows/retrieval-state-ui.yml/badge.svg?branch=main)](https://github.com/ajinkyabhanudas/genie-fertility/actions/workflows/retrieval-state-ui.yml)
+[![secure-backend](https://github.com/ajinkyabhanudas/genie-fertility/actions/workflows/secure-backend.yml/badge.svg?branch=main)](https://github.com/ajinkyabhanudas/genie-fertility/actions/workflows/secure-backend.yml)
+[![TypeScript](https://img.shields.io/badge/typescript-5.8-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
+[![Node 20+](https://img.shields.io/badge/node-20%2B-339933?logo=node.js&logoColor=white)](package.json)
+[![React 19](https://img.shields.io/badge/react-19-149eca?logo=react&logoColor=white)](package.json)
+[![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
+[![PostgreSQL + pgvector](https://img.shields.io/badge/postgres-pgvector-4169E1?logo=postgresql&logoColor=white)](server/db/migrations/001_init.sql)
+[![Bundle gate: no keys in client](https://img.shields.io/badge/bundle%20gate-no%20secrets%20in%20client-brightgreen)](DECISIONS.md)
 
 An AI-driven market-entry consulting tool for Genie Fertility (menstrual-blood
 diagnostics). Given a region and a clinical adjacency (e.g. endometriosis,
@@ -21,10 +30,10 @@ clinical/regulatory sources, not model guesswork.
 - **Honest retrieval state** — the UI shows `grounded` / `degraded` /
   `data-gap` derived from real signals (embedding mode, source-fetch
   success, similarity threshold). No fabricated confidence scores.
-- **Secure backend proxy** *(in review — PR #2)* — Gemini API key moves
-  server-side behind an Express proxy with auth, a hash-chained audit log,
-  and Postgres+pgvector persistence. See [Setup](#setup) for both the
-  current (pre-merge) and upcoming (post-merge) run instructions.
+- **Secure backend proxy** — Gemini API key lives server-side behind an
+  Express proxy with fail-closed auth, a hash-chained audit log, and
+  Postgres+pgvector persistence. No key ships in the client bundle
+  (enforced by a CI grep gate).
 
 ## What it does NOT do yet
 
@@ -48,25 +57,11 @@ clinical/regulatory sources, not model guesswork.
 - Node.js 20+
 - A Gemini API key (optional — the app runs in degraded/fallback mode
   without one; embeddings fall back to a deterministic vectorizer)
-- Docker (for the Postgres+pgvector backend, once PR #2 merges)
+- Docker (for the local Postgres+pgvector backend)
 
 ---
 
 ## Setup
-
-### Current (main branch — client-side only, pre-PR#2)
-
-```bash
-cp .env.example .env   # fill in GEMINI_API_KEY
-npm install
-npm run dev
-```
-
-Open **http://localhost:3000**. The Gemini key is currently inlined into
-the client bundle via `vite.config.ts` — this is the vulnerability PR #2
-fixes. Do not deploy `main` publicly until PR #2 merges.
-
-### After PR #2 merges (secure-backend)
 
 ```bash
 cp .env.example .env   # fill in GEMINI_API_KEY, AUTH_TOKEN, DATABASE_URL
@@ -92,7 +87,7 @@ grep -rE "GEMINI_API_KEY|AIza[0-9A-Za-z_-]{35}" dist/assets/*.js   # should prin
 | Command | What it does |
 |---|---|
 | `npm run dev` | Start the Vite dev server (client) |
-| `npm run dev:server` | Start the Express proxy (server) — needed once PR #2 merges |
+| `npm run dev:server` | Start the Express proxy (server) — required alongside `npm run dev` |
 | `npm run build` | Production build |
 | `npm run lint` | Typecheck (`tsc --noEmit`) — run before every commit |
 | `npm run test` | Run the full test suite (`src/` + `server/`) |
@@ -111,7 +106,7 @@ invalid placeholder key or mock the SDK boundary, even for a quick check.
   (`grounded`/`degraded`/`data-gap`) is derived from real signals
   (embedding mode, source-fetch success, similarity threshold), never a
   cosine-similarity number dressed up as a confidence score.
-- **Backend-for-Frontend seam (PR #2)** — one thin Express layer owns the
+- **Backend-for-Frontend seam** — one thin Express layer owns the
   Gemini key, auth, the audit log, and (later) the vector index — so later
   phases (retrieval, ground-truth, evals, agents) plug into one seam
   instead of each reinventing secret handling.
@@ -137,9 +132,9 @@ deferrals, and revisit triggers.
 | Phase | Branch | Depends on | State |
 |---|---|---|---|
 | SP-1 — Truth-in-UI (honest retrieval state, no fabricated confidence) | `retrieval-state-ui` | none | **Merged** (PR #1) |
-| SP-2 — Backend/BFF (auth, audit log, Postgres+pgvector, key off client) | `secure-backend` | SP-1 merged | **PR open** ([#2](https://github.com/ajinkyabhanudas/genie-fertility/pull/2)) |
-| SP-3 — Real hybrid retrieval (true BM25, pgvector, reranker) | `real-retrieval` | SP-2 merged | Not started |
-| SP-4 — Ground-truth ingestion (company baselines, schema inference) | `company-baselines` | SP-2 merged, parallel w/ SP-3 | Not started |
+| SP-2 — Backend/BFF (auth, audit log, Postgres+pgvector, key off client) | `secure-backend` | SP-1 merged | **Merged** (PR #2) |
+| SP-3 — Real hybrid retrieval (true BM25, pgvector, reranker) | `real-retrieval` | SP-2 merged | Not started — unblocked |
+| SP-4 — Ground-truth ingestion (company baselines, schema inference) | `company-baselines` | SP-2 merged, parallel w/ SP-3 | Not started — unblocked |
 | SP-5 — Eval harness ★ centrepiece (faithfulness, citation validity, CI gates) | `eval-harness` | SP-3 + SP-4 merged | Not started |
 | SP-6 — Agent architecture (planner + tool-using sub-agents + verifier) | `consultant-panel` | SP-3 + SP-5 merged | Not started |
 | SP-7 — Docs, ADRs, limitations register | `docs` | ongoing | Not started (this README is a first slice) |
@@ -153,9 +148,9 @@ in this repo — founder-local planning docs).
 
 ```
 src/               React client (screens, components, RAG services, data)
-server/            Express BFF: auth, audit log, Postgres pool, migrations  [PR #2]
+server/            Express BFF: auth, audit log, Postgres pool, migrations
 server/db/migrations/  SQL migrations, run automatically via docker-compose
-docker-compose.yml Local Postgres+pgvector for development                 [PR #2]
+docker-compose.yml Local Postgres+pgvector for development
 DECISIONS.md       Phase status, scope-narrowing decisions, revisit triggers
 .github/workflows/ One path-scoped CI workflow per phase
 ```

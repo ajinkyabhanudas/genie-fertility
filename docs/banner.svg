@@ -1,0 +1,44 @@
+<svg width="1200" height="220" viewBox="0 0 1200 220" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3D0B37"/>
+      <stop offset="55%" stop-color="#371E40"/>
+      <stop offset="100%" stop-color="#33183D"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="84%" cy="18%" r="70%">
+      <stop offset="0%" stop-color="#B59DF2" stop-opacity="0.32"/>
+      <stop offset="100%" stop-color="#B59DF2" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="wordmarkAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#F4EAFF"/>
+      <stop offset="100%" stop-color="#B59DF2"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="220" fill="url(#bg)"/>
+  <rect width="1200" height="220" fill="url(#glow)"/>
+
+  <!-- Fusion motif: three retrieved signals converging to one verdict —
+       echoes RRF (reciprocal rank fusion) and the grounded/degraded/data-gap
+       states this app surfaces instead of a fabricated confidence score. -->
+  <g opacity="0.55">
+    <circle cx="985" cy="55" r="3" fill="#DBE2FF"/>
+    <circle cx="1040" cy="80" r="3" fill="#B59DF2"/>
+    <circle cx="978" cy="110" r="3" fill="#E7E6FF"/>
+    <path d="M 985 55 L 1060 84 M 1040 80 L 1060 84 M 978 110 L 1060 84"
+          stroke="#B59DF2" stroke-width="1" opacity="0.65"/>
+    <circle cx="1060" cy="84" r="5" fill="none" stroke="#F4EAFF" stroke-width="1.5"/>
+  </g>
+
+  <text x="80" y="106" font-family="'Helvetica Neue', Arial, sans-serif"
+        font-size="66" font-weight="700" letter-spacing="-1" fill="#F4EAFF">GENIE</text>
+  <text x="82" y="146" font-family="'Helvetica Neue', Arial, sans-serif"
+        font-size="30" font-weight="300" letter-spacing="10" fill="url(#wordmarkAccent)">FERTILITY</text>
+
+  <rect x="82" y="163" width="4" height="4" fill="#B59DF2"/>
+  <text x="96" y="167" font-family="Menlo, Consolas, monospace"
+        font-size="14" fill="#DBE2FF" letter-spacing="0.3" opacity="0.9">market-entry decisions, ground-truth-checked</text>
+
+  <text x="82" y="196" font-family="Menlo, Consolas, monospace" font-size="12"
+        fill="#B59DF2" opacity="0.7" letter-spacing="0.3">non-invasive · menstrual-blood diagnostics</text>
+</svg>
