@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: genie
+      POSTGRES_PASSWORD: genie_dev_only
+      POSTGRES_DB: genie
+    ports:
+      - "5432:5432"
+    volumes:
+      - genie_pgdata:/var/lib/postgresql/data
+      - ./server/db/migrations:/docker-entrypoint-initdb.d
+
+volumes:
+  genie_pgdata:

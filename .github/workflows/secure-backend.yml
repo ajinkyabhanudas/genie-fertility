@@ -45,3 +45,14 @@ jobs:
 
       - name: Run frontend test suite (subset-scoped to src/)
         run: npm run test
+
+      - name: Build client bundle
+        run: npm run build
+
+      - name: Bundle gate — no API keys in the client build (S3 regression test)
+        run: |
+          if grep -rE "GEMINI_API_KEY|AIza[0-9A-Za-z_-]{35}" dist/assets/*.js; then
+            echo "API key material found in client bundle — failing build."
+            exit 1
+          fi
+          echo "Bundle gate passed: no key material in dist/."
