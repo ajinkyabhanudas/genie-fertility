@@ -4,6 +4,25 @@ Tracks scope-narrowing decisions made during implementation — what was deferre
 why, and what should trigger revisiting it. SP-7 formalizes these as full ADRs;
 this file is the running log until then.
 
+## Current Status (as of 2026-07-23)
+
+- **SP-1 (retrieval-state-ui):** MERGED to `main` via PR #1.
+- **SP-2 (secure-backend):** PR #2 open — https://github.com/ajinkyabhanudas/genie-fertility/pull/2
+  — auth, hash-chained audit log, Postgres+pgvector persistence, idempotent
+  generation caching, CI bundle gate. 50/50 tests pass. Needs review + merge.
+  Full scope per `~/.claude/plans/genie-subplans/SP-2-backend-bff.md` is
+  covered except the 3 items logged as active deferrals below.
+- **SP-3 (real-retrieval):** not started. Depends on SP-2 merged. Owns: the
+  real `/api/retrieve` route, moving `hybridSearch.ts`'s BM25/RRF logic and
+  the 3 source connectors server-side with retry/backoff/cache, true BM25 +
+  pgvector + reranker, live provenance existence-resolution.
+- **SP-4 (company-baselines):** not started. Depends on SP-2 merged, parallel with SP-3.
+- **SP-5 (eval-harness):** not started. Depends on SP-3 + SP-4 merged. ★ centrepiece.
+- **SP-6 (consultant-panel):** not started. Depends on SP-3 + SP-5 merged.
+- **SP-7 (docs):** not started. Continuous — a slice merges alongside each phase.
+
+Full SP plan files: `~/.claude/plans/genie-subplans/SP-*.md` (not in this repo).
+
 ## Active Deferrals
 
 | # | Deferred | Reason | Revisit trigger | Added |
