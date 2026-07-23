@@ -5,6 +5,12 @@
  */
 
 import { GoogleGenAI } from "@google/genai";
+import { EmbeddingMode } from "../../types/rag";
+
+export interface EmbeddingResult {
+  vector: number[];
+  mode: EmbeddingMode;
+}
 
 /**
  * Cosine Similarity calculation between two 1D vector arrays.
@@ -57,11 +63,13 @@ function generateFallbackEmbedding(text: string, dimensions: number = 768): numb
 
 /**
  * Generates vector embedding via Gemini API text-embedding-004.
+ * Returns which mode produced the vector so callers can surface degraded state
+ * instead of silently presenting fallback (non-semantic) vectors as normal.
  */
-export async function getEmbedding(text: string): Promise<number[]> {
+export async function getEmbedding(text: string): Promise<EmbeddingResult> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return generateFallbackEmbedding(text);
+    return { vector: generateFallbackEmbedding(text), mode: 'fallback' };
   }
 
   try {
@@ -73,14 +81,14 @@ export async function getEmbedding(text: string): Promise<number[]> {
 
     const res = response as any;
     if (res.embedding?.values) {
-      return res.embedding.values;
+      return { vector: res.embedding.values, mode: 'semantic' };
     }
     if (res.embeddings?.[0]?.values) {
-      return res.embeddings[0].values;
+      return { vector: res.embeddings[0].values, mode: 'semantic' };
     }
-    return generateFallbackEmbedding(text);
+    return { vector: generateFallbackEmbedding(text), mode: 'fallback' };
   } catch (error) {
     console.warn("Gemini embedding API call failed, using fallback vectorizer:", error);
-    return generateFallbackEmbedding(text);
+    return { vector: generateFallbackEmbedding(text), mode: 'fallback' };
   }
 }
