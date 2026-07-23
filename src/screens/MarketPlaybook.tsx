@@ -29,7 +29,9 @@ import remarkGfm from 'remark-gfm';
 import { COUNTRY_DETAILS } from '../data/countries';
 import { executeHybridRAGSearch } from '../services/rag/hybridSearch';
 import CitationDrawer from '../components/CitationDrawer';
-import { Citation } from '../types/rag';
+import RetrievalStateBadge from '../components/RetrievalStateBadge';
+import ErrorBoundary from '../components/ErrorBoundary';
+import { Citation, RetrievalState } from '../types/rag';
 
 // Helper for scoring (same logic as ScoringDashboard)
 const CONSTITUENTS = [
@@ -133,10 +135,10 @@ export default function MarketPlaybook(props: any) {
 
   // RAG Architecture State
   const [citationsMap, setCitationsMap] = useState<Record<number, Citation[]>>({});
-  const [confidenceMap, setConfidenceMap] = useState<Record<number, number>>({});
-  const [dataGapMap, setDataGapMap] = useState<Record<number, boolean>>({});
+  const [retrievalStateMap, setRetrievalStateMap] = useState<Record<number, RetrievalState>>({});
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [drawerCitations, setDrawerCitations] = useState<Citation[]>([]);
+  const [drawerRetrievalState, setDrawerRetrievalState] = useState<RetrievalState>('data-gap');
 
   // Sync if selections disappear
   useEffect(() => {
@@ -162,12 +164,19 @@ export default function MarketPlaybook(props: any) {
     if (!step) return;
 
     // 1. Execute Hybrid RAG Retrieval across PubMed / ClinicalTrials / openFDA / Static Corpus
-    const ragQuery = `${selectedCountry} ${selectedAdjacency} ${step.name}`;
-    const ragPayload = await executeHybridRAGSearch(ragQuery, selectedAdjacency);
+    let ragPayload;
+    try {
+      const ragQuery = `${selectedCountry} ${selectedAdjacency} ${step.name}`;
+      ragPayload = await executeHybridRAGSearch(ragQuery, selectedAdjacency);
+    } catch (error) {
+      console.error(`Retrieval failed for step ${stepId}:`, error);
+      setGeneratingStepId(null);
+      setErrorStepId(stepId);
+      return;
+    }
 
     setCitationsMap(prev => ({ ...prev, [stepId]: ragPayload.citations }));
-    setConfidenceMap(prev => ({ ...prev, [stepId]: Math.round(ragPayload.maxSimilarity * 100) || 88 }));
-    setDataGapMap(prev => ({ ...prev, [stepId]: ragPayload.hasDataGap }));
+    setRetrievalStateMap(prev => ({ ...prev, [stepId]: ragPayload.retrievalState }));
 
     // 2. Construct Grounded System Prompt
     const prompt = `
@@ -209,6 +218,7 @@ export default function MarketPlaybook(props: any) {
   const openCitationsForStep = (stepId: number) => {
     const cites = citationsMap[stepId] || [];
     setDrawerCitations(cites);
+    setDrawerRetrievalState(retrievalStateMap[stepId] || 'data-gap');
     setIsDrawerOpen(true);
   };
 
@@ -423,14 +433,17 @@ export default function MarketPlaybook(props: any) {
               <div className="flex items-center gap-2">
                 {stepContents[activeStepId] && (
                   <div className="flex items-center gap-2">
-                    <button 
+                    {retrievalStateMap[activeStepId] && (
+                      <RetrievalStateBadge state={retrievalStateMap[activeStepId]} />
+                    )}
+                    <button
                       onClick={() => openCitationsForStep(activeStepId)}
                       className="flex items-center gap-2 px-4 py-2 bg-brand-accent/10 border border-brand-accent/20 rounded-xl hover:bg-brand-accent/20 transition-all text-xs font-bold text-brand-accent"
                     >
-                      <ShieldCheck size={14} className="text-emerald-400" />
-                      View Verified Sources ({citationsMap[activeStepId]?.length || 0})
+                      <ShieldCheck size={14} />
+                      Retrieved sources ({citationsMap[activeStepId]?.length || 0})
                     </button>
-                    <button 
+                    <button
                       onClick={() => downloadStep(activeStepId)}
                       className="flex items-center gap-2 px-4 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl hover:bg-emerald-500/20 transition-all text-xs font-bold text-emerald-400"
                     >
@@ -440,12 +453,12 @@ export default function MarketPlaybook(props: any) {
                   </div>
                 )}
                 {(!stepContents[activeStepId] && !generatingStepId) && (
-                  <button 
+                  <button
                     onClick={() => generateStep(activeStepId)}
                     className="flex items-center gap-2 px-6 py-2 bg-brand-accent text-brand-bg rounded-xl hover:scale-105 active:scale-95 transition-all text-xs font-black shadow-lg shadow-brand-accent/20"
                   >
                     <Play size={14} fill="currentColor" />
-                    APPROVE & EXECUTE
+                    Run analysis
                   </button>
                 )}
               </div>
@@ -470,7 +483,7 @@ export default function MarketPlaybook(props: any) {
                      <div>
                        <h4 className="text-2xl font-bold text-white mb-2 font-display tracking-tight">Synthesizing Market Intelligence</h4>
                        <p className="text-brand-mint/40 text-sm max-w-sm mx-auto leading-relaxed">
-                         Genie's agent is crawling global databases, peer-reviewed journals, and national registries for {selectedCountry}.
+                         Running hybrid retrieval across Europe PMC, ClinicalTrials.gov and openFDA, then synthesising with the language model for {selectedCountry}.
                        </p>
                        <div className="mt-8 flex justify-center gap-1.5">
                          {[0,1,2].map(i => (
@@ -491,18 +504,20 @@ export default function MarketPlaybook(props: any) {
                     animate={{ opacity: 1, y: 0 }}
                     className="markdown-body"
                   >
-                    <div className="prose prose-invert prose-brand max-w-none 
-                      prose-headings:font-display prose-headings:tracking-tight
-                      prose-h1:text-3xl prose-h1:mb-8
-                      prose-h2:text-xl prose-h2:text-brand-accent prose-h2:mt-10 prose-h2:mb-4
-                      prose-table:border prose-table:border-white/10 prose-th:bg-white/5 prose-th:px-4 prose-th:py-3 prose-td:px-4 prose-td:py-3 prose-td:text-brand-mint/80
-                      prose-p:text-brand-mint/90 prose-p:leading-relaxed prose-p:mb-5
-                      prose-li:text-brand-mint/80
-                    ">
-                      <Markdown remarkPlugins={[remarkGfm]}>
-                        {stepContents[activeStepId]}
-                      </Markdown>
-                    </div>
+                    <ErrorBoundary stage="Report rendering">
+                      <div className="prose prose-invert prose-brand max-w-none
+                        prose-headings:font-display prose-headings:tracking-tight
+                        prose-h1:text-3xl prose-h1:mb-8
+                        prose-h2:text-xl prose-h2:text-brand-accent prose-h2:mt-10 prose-h2:mb-4
+                        prose-table:border prose-table:border-white/10 prose-th:bg-white/5 prose-th:px-4 prose-th:py-3 prose-td:px-4 prose-td:py-3 prose-td:text-brand-mint/80
+                        prose-p:text-brand-mint/90 prose-p:leading-relaxed prose-p:mb-5
+                        prose-li:text-brand-mint/80
+                      ">
+                        <Markdown remarkPlugins={[remarkGfm]}>
+                          {stepContents[activeStepId]}
+                        </Markdown>
+                      </div>
+                    </ErrorBoundary>
                   </motion.div>
                 ) : (
                   <motion.div 
@@ -535,12 +550,12 @@ export default function MarketPlaybook(props: any) {
 
                          <div className="grid grid-cols-2 gap-4">
                            <div className="p-4 bg-white/[0.02] rounded-xl border border-white/5">
-                             <div className="text-[10px] text-brand-mint/30 uppercase tracking-wider mb-2">Data Integrity</div>
-                             <div className="text-xs text-brand-mint/70">Cross-referencing ESHRE, ASRM, and local IVF registries.</div>
+                             <div className="text-[10px] text-brand-mint/30 uppercase tracking-wider mb-2">Retrieval Sources</div>
+                             <div className="text-xs text-brand-mint/70">Europe PMC, ClinicalTrials.gov, openFDA, and Genie's static clinical corpus.</div>
                            </div>
                            <div className="p-4 bg-white/[0.02] rounded-xl border border-white/5">
-                             <div className="text-[10px] text-brand-mint/30 uppercase tracking-wider mb-2">Compliance Guard</div>
-                             <div className="text-xs text-brand-mint/70">Automatic validation against local diagnostic LDT regulations.</div>
+                             <div className="text-[10px] text-brand-mint/30 uppercase tracking-wider mb-2">Roadmap: Ground-Truth Verification</div>
+                             <div className="text-xs text-brand-mint/70">Automated claim-level verification against local diagnostic regulations is planned but not yet implemented.</div>
                            </div>
                          </div>
                        </div>
@@ -563,7 +578,7 @@ export default function MarketPlaybook(props: any) {
             <div className="p-6 bg-brand-bg/50 border-t border-white/5 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-4">
                 <div className="text-[10px] font-mono text-brand-mint/30 uppercase tracking-[0.2em]">
-                  GENIE_Expansion_Engine_v2.5
+                  Genie Market Playbook
                 </div>
                 <div className="h-3 w-px bg-white/10" />
                 <div className="text-[10px] font-mono text-brand-accent/50 uppercase">
@@ -584,7 +599,7 @@ export default function MarketPlaybook(props: any) {
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
         citations={drawerCitations}
-        confidenceScore={confidenceMap[activeStepId] || 92}
+        retrievalState={drawerRetrievalState}
         countryName={selectedCountry}
         adjacencyName={selectedAdjacency}
       />
