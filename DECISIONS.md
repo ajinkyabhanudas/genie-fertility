@@ -13,10 +13,12 @@ this file is the running log until then.
   pass, `npm run lint` clean). Full scope per
   `~/.claude/plans/genie-subplans/SP-2-backend-bff.md` is covered except
   the 3 items logged as active deferrals below.
-- **SP-3 (real-retrieval):** not started — unblocked (SP-2 merged). Owns: the
+- **SP-3 (real-retrieval):** IN PROGRESS on `real-retrieval`. Owns: the
   real `/api/retrieve` route, moving `hybridSearch.ts`'s BM25/RRF logic and
   the 3 source connectors server-side with retry/backoff/cache, true BM25 +
-  pgvector + reranker, live provenance existence-resolution.
+  pgvector + reranker, live provenance existence-resolution. Broken into
+  8 ordered sub-tasks (SP-3.1–SP-3.8) below — dependency-ordered, each
+  independently committable and resumable across sessions.
 - **SP-4 (company-baselines):** not started — unblocked (SP-2 merged), parallel with SP-3.
 - **SP-5 (eval-harness):** not started. Depends on SP-3 + SP-4 merged. ★ centrepiece.
 - **SP-6 (consultant-panel):** not started. Depends on SP-3 + SP-5 merged.
@@ -24,6 +26,29 @@ this file is the running log until then.
   This README/DECISIONS maintenance is the first slice.
 
 Full SP plan files: `~/.claude/plans/genie-subplans/SP-*.md` (not in this repo).
+
+## SP-3 sub-task tracker (dependency-ordered, resumable across sessions)
+
+Source of truth for SP-3 progress. Update the status column as each lands;
+do not reorder — later items depend on earlier ones landing first. Each
+sub-task should be its own commit (or small commit group) on `real-retrieval`,
+tested before moving to the next.
+
+| # | Sub-task | Depends on | Status |
+|---|----------|------------|--------|
+| SP-3.1 | Ingest pipeline (`server/retrieval/ingest.ts`): chunk → embed-once → store vector + FTS tsvector + metadata in `document_chunks`. Idempotent by chunk id + content hash (re-ingest of unchanged chunk = 0 embed calls). Migration `002_ingest_fts.sql` adds `content_hash`/`fts_vector` columns. | SP-2 schema (`document_chunks`, merged) | Core + tests done; static-corpus loader script deferred to SP-3.4 |
+| SP-3.2 | Real sparse scoring (`server/retrieval/bm25.ts` or Postgres FTS/`ts_rank`): IDF + doc-length normalisation over corpus stats, not per-query regex counting. | SP-3.1 (needs populated tsvector column) | Not started |
+| SP-3.3 | pgvector ANN query path: HNSW/IVFFlat index on `document_chunks.embedding`, query-embeds-only (no corpus re-embedding) similarity search. | SP-3.1 (needs populated embeddings) | Not started |
+| SP-3.4 | `server/retrieval/index.ts` + `/api/retrieve` route: query-embed → dense ANN + sparse FTS → RRF merge (reuse `hybridSearch.ts`'s RRF math, k=60) → top-k candidates. Also owns the static-corpus loader script (deferred from SP-3.1 — no real caller existed yet). | SP-3.2, SP-3.3 | Not started |
+| SP-3.5 | Reranker adapter (`server/retrieval/rerank.ts`): Cohere Rerank v3 (or open reranker if data-residency requires), fixture-record/replay wrapper for tests (G2 — no live calls in CI). Retrieve-50 → rerank-5. | SP-3.4 | Not started |
+| SP-3.6 | Provenance gate wiring: unresolved citations demoted/flagged before ranked results reach the client — never surfaced as verified. Reuses SP-2's validator. | SP-3.4 | Not started |
+| SP-3.7 | Client cutover: retire per-query re-embedding loop in `hybridSearch.ts` and the vector-store role of `indexedDbStore.ts` (client keeps a thin UI-result cache only); client posts query to `/api/retrieve` and renders server results. | SP-3.4, SP-3.5, SP-3.6 | Not started |
+| SP-3.8 | Retrieval-quality harness (shared scaffold with SP-5): context precision/recall on the golden set, replayed from fixtures, before (regex-BM25) vs after (real hybrid+rerank) measured lift. Threshold gate in CI. | SP-3.4–SP-3.7 | Not started |
+
+Failure-mode contracts (apply to all sub-tasks above, per SP-3 spec NFR section):
+reranker down → fall back to RRF-only, mark `degraded`. ANN down → sparse-only,
+mark `degraded`. Never silent. Ingest idempotency is a hard gate (SP-3.1's own
+test asserts embed-call counter == 0 on re-ingest of unchanged chunk).
 
 ## Active Deferrals
 
