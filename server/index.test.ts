@@ -25,6 +25,9 @@ vi.mock('@google/genai', () => ({
 let generationCache: Map<string, string>;
 let auditRowCount: number;
 let failNextAuditInsert: boolean;
+let retrieveSparseRows: { id: string; score: number }[];
+let retrieveDenseRows: { id: string; similarity: number }[];
+let retrieveChunkRows: any[];
 
 const mockClient = {
   query: vi.fn(async (sql: string, params?: any[]) => {
@@ -48,6 +51,16 @@ const mockClient = {
       const [key, text] = params ?? [];
       generationCache.set(key, text);
       return { rows: [] };
+    }
+    if (sql.includes('ts_rank_cd')) {
+      return { rows: retrieveSparseRows };
+    }
+    if (sql.includes('embedding <=>') && sql.includes('ORDER BY')) {
+      return { rows: retrieveDenseRows };
+    }
+    if (sql.includes('FROM document_chunks') && sql.includes('WHERE id = ANY')) {
+      const ids: string[] = params?.[0] ?? [];
+      return { rows: retrieveChunkRows.filter((row) => ids.includes(row.id)) };
     }
     // BEGIN / COMMIT / ROLLBACK
     return { rows: [] };
@@ -75,6 +88,9 @@ describe('proxy server', () => {
     generationCache = new Map();
     auditRowCount = 0;
     failNextAuditInsert = false;
+    retrieveSparseRows = [];
+    retrieveDenseRows = [];
+    retrieveChunkRows = [];
     process.env.GEMINI_API_KEY = 'test-key';
     process.env.AUTH_TOKEN = 'test-auth-token';
     process.env.PROXY_PORT = '0';
@@ -219,6 +235,104 @@ describe('proxy server', () => {
     expect(body.text).toBe('first response');
     expect(mockGenerateContent).not.toHaveBeenCalled();
     expect(auditRowCount).toBe(1); // no new row for the cache hit
+  });
+
+  it('POST /api/retrieve returns fused chunks on success', async () => {
+    mockEmbedContent.mockResolvedValue({ embedding: { values: new Array(768).fill(0.1) } });
+    retrieveSparseRows = [{ id: 'chunk-1', score: 0.8 }];
+    retrieveDenseRows = [{ id: 'chunk-1', similarity: 0.9 }];
+    retrieveChunkRows = [
+      {
+        id: 'chunk-1',
+        ref_tag: '[REF-1]',
+        title: 'Test Title',
+        abstract: 'Test abstract',
+        text: 'Test body',
+        source: 'static_corpus',
+        source_name: 'Test Source',
+        url: null,
+        doi: null,
+        pmid: null,
+        nct_id: null,
+        publication_date: null,
+        authors: null,
+      },
+    ];
+
+    const res = await fetch(`${baseUrl}/api/retrieve`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ query: 'recurrent implantation failure' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.degraded).toBe(false);
+    expect(body.chunks).toHaveLength(1);
+    expect(body.chunks[0].id).toBe('chunk-1');
+  });
+
+  it('POST /api/retrieve returns 400 when query is missing', async () => {
+    const res = await fetch(`${baseUrl}/api/retrieve`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /api/retrieve returns 503 when no API key is configured', async () => {
+    delete process.env.GEMINI_API_KEY;
+    vi.resetModules();
+    const mod = await import('./index');
+    await new Promise<void>((resolve) => mod.server.once('listening', resolve));
+    const address = mod.server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    const noKeyUrl = `http://127.0.0.1:${port}`;
+
+    const res = await fetch(`${noKeyUrl}/api/retrieve`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ query: 'test' }),
+    });
+
+    expect(res.status).toBe(503);
+    await new Promise<void>((resolve) => mod.server.close(() => resolve()));
+    process.env.GEMINI_API_KEY = 'test-key';
+  });
+
+  it('POST /api/retrieve degrades gracefully when dense search fails, sparse still succeeds', async () => {
+    retrieveSparseRows = [{ id: 'chunk-1', score: 0.7 }];
+    retrieveChunkRows = [
+      {
+        id: 'chunk-1',
+        ref_tag: '[REF-1]',
+        title: 'Test Title',
+        abstract: null,
+        text: 'Test body',
+        source: 'static_corpus',
+        source_name: 'Test Source',
+        url: null,
+        doi: null,
+        pmid: null,
+        nct_id: null,
+        publication_date: null,
+        authors: null,
+      },
+    ];
+    mockEmbedContent.mockRejectedValue(new Error('embedding upstream failure'));
+
+    const res = await fetch(`${baseUrl}/api/retrieve`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ query: 'test query' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.degraded).toBe(true);
+    expect(body.chunks).toHaveLength(1);
   });
 
   it('rate-limits after the configured max requests per window', async () => {
