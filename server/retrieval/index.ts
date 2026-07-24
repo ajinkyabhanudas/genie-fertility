@@ -1,19 +1,26 @@
 /**
  * @file index.ts
- * @description SP-3.4: the real retrieval pipeline — query-embed once, dense
- * ANN (SP-3.3) + sparse FTS (SP-3.2) in parallel, RRF merge (same k=60 math
- * as hybridSearch.ts, now fusing real signals instead of a regex score),
- * then hydrate the fused top-k with full chunk rows for the caller.
+ * @description The real retrieval pipeline — query-embed once, dense ANN
+ * (SP-3.3) + sparse FTS (SP-3.2) in parallel, RRF merge (same k=60 math as
+ * hybridSearch.ts, now fusing real signals instead of a regex score),
+ * hydrate the full RRF candidate pool, then rerank (SP-3.5) down to top-k.
  *
- * Reranking (SP-3.5) and provenance gating (SP-3.6) are not yet wired here —
- * this pipeline's output is exactly the "clean service" those phases will
- * sit on top of.
+ * Retrieve-50 -> rerank-5: RRF fuses and ranks the full candidate pool
+ * (candidatePoolSize, default 50), all of it is hydrated with full text,
+ * the reranker cross-encodes (query, text) for every candidate and
+ * re-orders, then only the final top-k is returned. Reranker failure
+ * (model load or inference) falls back to RRF-only ordering, marked
+ * degraded — never a hard failure (DECISIONS.md D1).
+ *
+ * Provenance gating (SP-3.6) is not yet wired here — this pipeline's
+ * output is exactly the "clean service" that phase will sit on top of.
  */
 
 import type { Pool } from 'pg';
 import type { GoogleGenAI } from '@google/genai';
 import { searchSparse } from './bm25';
 import { searchDense } from './ann';
+import { rerank } from './rerank';
 
 export interface RetrievedChunk {
   id: string;
@@ -32,12 +39,13 @@ export interface RetrievedChunk {
   rrfScore: number;
   bm25Rank: number | null;
   denseRank: number | null;
+  rerankScore: number | null;
 }
 
 export interface RetrieveResult {
   chunks: RetrievedChunk[];
   degraded: boolean;
-  degradedReason?: string;
+  degradedReasons: string[];
 }
 
 const RRF_K = 60;
@@ -77,68 +85,80 @@ export async function retrieve(
   deps: { pool: Pool; ai: GoogleGenAI; candidatePoolSize?: number }
 ): Promise<RetrieveResult> {
   const candidateLimit = deps.candidatePoolSize ?? 50;
-  let degraded = false;
-  let degradedReason: string | undefined;
+  const degradedReasons: string[] = [];
 
   const sparsePromise = searchSparse(query, candidateLimit, { pool: deps.pool });
   const densePromise = searchDense(query, candidateLimit, { pool: deps.pool, ai: deps.ai }).catch((error) => {
-    degraded = true;
-    degradedReason = 'dense_search_failed';
-    console.log(JSON.stringify({ event: 'retrieve_degraded', reason: degradedReason, error: String(error) }));
+    degradedReasons.push('dense_search_failed');
+    console.log(JSON.stringify({ event: 'retrieve_degraded', reason: 'dense_search_failed', error: String(error) }));
     return [] as { id: string; similarity: number }[];
   });
 
   const [sparse, dense] = await Promise.all([sparsePromise, densePromise]);
 
   const fused = computeRrf(sparse, dense);
-  const topIds = Array.from(fused.entries())
+  const candidateIds = Array.from(fused.entries())
     .sort((a, b) => b[1].rrfScore - a[1].rrfScore)
-    .slice(0, topK)
     .map(([id]) => id);
 
-  if (topIds.length === 0) {
-    return { chunks: [], degraded, degradedReason };
+  if (candidateIds.length === 0) {
+    return { chunks: [], degraded: degradedReasons.length > 0, degradedReasons };
   }
 
   const client = await deps.pool.connect();
+  let rowsById: Map<string, any>;
   try {
     const result = await client.query(
       `SELECT id, ref_tag, title, abstract, text, source, source_name, url, doi,
               pmid, nct_id, publication_date, authors
        FROM document_chunks
        WHERE id = ANY($1)`,
-      [topIds]
+      [candidateIds]
     );
-
-    const rowsById = new Map(result.rows.map((row: any) => [row.id, row]));
-
-    const chunks: RetrievedChunk[] = topIds
-      .filter((id) => rowsById.has(id))
-      .map((id) => {
-        const row = rowsById.get(id);
-        const fusedEntry = fused.get(id)!;
-        return {
-          id: row.id,
-          refTag: row.ref_tag,
-          title: row.title,
-          abstract: row.abstract,
-          text: row.text,
-          source: row.source,
-          sourceName: row.source_name,
-          url: row.url,
-          doi: row.doi,
-          pmid: row.pmid,
-          nctId: row.nct_id,
-          publicationDate: row.publication_date,
-          authors: row.authors,
-          rrfScore: fusedEntry.rrfScore,
-          bm25Rank: fusedEntry.bm25Rank,
-          denseRank: fusedEntry.denseRank,
-        };
-      });
-
-    return { chunks, degraded, degradedReason };
+    rowsById = new Map(result.rows.map((row: any) => [row.id, row]));
   } finally {
     client.release();
   }
+
+  const hydratedIds = candidateIds.filter((id) => rowsById.has(id));
+
+  let orderedIds = hydratedIds;
+  let rerankScoreById = new Map<string, number>();
+  try {
+    const rerankInput = hydratedIds.map((id) => ({ id, text: rowsById.get(id).text }));
+    const reranked = await rerank(query, rerankInput);
+    orderedIds = reranked.map((r) => r.id);
+    rerankScoreById = new Map(reranked.map((r) => [r.id, r.rerankScore]));
+  } catch (error) {
+    degradedReasons.push('reranker_failed');
+    console.log(JSON.stringify({ event: 'retrieve_degraded', reason: 'reranker_failed', error: String(error) }));
+  }
+
+  const topIds = orderedIds.slice(0, topK);
+
+  const chunks: RetrievedChunk[] = topIds.map((id) => {
+    const row = rowsById.get(id);
+    const fusedEntry = fused.get(id)!;
+    return {
+      id: row.id,
+      refTag: row.ref_tag,
+      title: row.title,
+      abstract: row.abstract,
+      text: row.text,
+      source: row.source,
+      sourceName: row.source_name,
+      url: row.url,
+      doi: row.doi,
+      pmid: row.pmid,
+      nctId: row.nct_id,
+      publicationDate: row.publication_date,
+      authors: row.authors,
+      rrfScore: fusedEntry.rrfScore,
+      bm25Rank: fusedEntry.bm25Rank,
+      denseRank: fusedEntry.denseRank,
+      rerankScore: rerankScoreById.get(id) ?? null,
+    };
+  });
+
+  return { chunks, degraded: degradedReasons.length > 0, degradedReasons };
 }
