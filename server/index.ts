@@ -13,6 +13,7 @@ import { createRateLimiter } from './rateLimit';
 import { requireAuth } from './auth';
 import { pool } from './db/pool';
 import { writeAuditEntry } from './audit/auditLog';
+import { retrieve } from './retrieval';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -148,6 +149,33 @@ app.post('/api/generate', rateLimit, async (req, res) => {
     res.status(503).json({ error: 'generation_unavailable', reason: 'upstream_error' });
   } finally {
     client.release();
+  }
+});
+
+app.post('/api/retrieve', rateLimit, async (req, res) => {
+  const startedAt = Date.now();
+  const { query, topK } = req.body ?? {};
+
+  if (typeof query !== 'string' || query.trim().length === 0) {
+    res.status(400).json({ error: 'query (string) is required' });
+    return;
+  }
+
+  if (!ai) {
+    logOutcome('retrieve', startedAt, 'error');
+    res.status(503).json({ error: 'retrieval_unavailable', reason: 'no_api_key' });
+    return;
+  }
+
+  try {
+    const resolvedTopK = typeof topK === 'number' && topK > 0 ? Math.min(topK, 50) : 5;
+    const result = await retrieve(query, resolvedTopK, { pool, ai });
+
+    logOutcome('retrieve', startedAt, result.degraded ? 'fallback' : 'success');
+    res.json(result);
+  } catch (error) {
+    logOutcome('retrieve', startedAt, 'error');
+    res.status(503).json({ error: 'retrieval_unavailable', reason: 'upstream_error' });
   }
 });
 
