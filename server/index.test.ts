@@ -10,6 +10,15 @@ import type { Server } from 'http';
 const mockEmbedContent = vi.fn();
 const mockGenerateContent = vi.fn();
 
+// Reranker is mocked as a pass-through — real ONNX model loading has no
+// place in a unit test (slow, non-deterministic download-on-first-run).
+// SP-3.5's own rerank.test.ts covers the adapter directly.
+vi.mock('./retrieval/rerank', () => ({
+  rerank: vi.fn(async (_query: string, candidates: { id: string; text: string }[]) =>
+    candidates.map((c) => ({ id: c.id, rerankScore: 0 }))
+  ),
+}));
+
 vi.mock('@google/genai', () => ({
   GoogleGenAI: vi.fn().mockImplementation(function (this: any) {
     this.models = {

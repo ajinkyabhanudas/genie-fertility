@@ -1,10 +1,12 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { retrieve } from './index';
 import * as bm25 from './bm25';
 import * as ann from './ann';
+import * as rerankModule from './rerank';
 
 vi.mock('./bm25');
 vi.mock('./ann');
+vi.mock('./rerank');
 
 function makeMockPool(chunkRows: Record<string, any>) {
   const client = {
@@ -40,6 +42,17 @@ function makeChunkRow(id: string) {
 
 const mockAi = {} as any;
 
+/** Default rerank mock: pass through in the input (RRF) order, unchanged. */
+function stubRerankPassthrough() {
+  vi.mocked(rerankModule.rerank).mockImplementation(async (_query, candidates) =>
+    candidates.map((c) => ({ id: c.id, rerankScore: 0 }))
+  );
+}
+
+beforeEach(() => {
+  stubRerankPassthrough();
+});
+
 describe('retrieve', () => {
   it('fuses dense + sparse results via RRF and hydrates full chunk rows', async () => {
     vi.mocked(bm25.searchSparse).mockResolvedValue([{ id: 'a', score: 0.9 }]);
@@ -56,7 +69,7 @@ describe('retrieve', () => {
     expect(result.chunks[0].rrfScore).toBeGreaterThan(0);
   });
 
-  it('ranks a chunk appearing in both lists above one appearing in only one', async () => {
+  it('ranks a chunk appearing in both lists above one appearing in only one (pre-rerank RRF order)', async () => {
     vi.mocked(bm25.searchSparse).mockResolvedValue([
       { id: 'both', score: 0.7 },
       { id: 'sparse-only', score: 0.9 },
@@ -69,7 +82,7 @@ describe('retrieve', () => {
     expect(result.chunks[0].id).toBe('both');
   });
 
-  it('degrades to sparse-only when dense search throws, never fails the request', async () => {
+  it('degrades (dense_search_failed) when dense search throws, never fails the request', async () => {
     vi.mocked(bm25.searchSparse).mockResolvedValue([{ id: 'a', score: 0.8 }]);
     vi.mocked(ann.searchDense).mockRejectedValue(new Error('embed failed'));
     const pool = makeMockPool({ a: makeChunkRow('a') });
@@ -77,7 +90,7 @@ describe('retrieve', () => {
     const result = await retrieve('query', 5, { pool, ai: mockAi });
 
     expect(result.degraded).toBe(true);
-    expect(result.degradedReason).toBe('dense_search_failed');
+    expect(result.degradedReasons).toContain('dense_search_failed');
     expect(result.chunks).toHaveLength(1);
     expect(result.chunks[0].id).toBe('a');
   });
@@ -91,9 +104,10 @@ describe('retrieve', () => {
 
     expect(result.chunks).toEqual([]);
     expect(result.degraded).toBe(false);
+    expect(result.degradedReasons).toEqual([]);
   });
 
-  it('respects topK when truncating fused results', async () => {
+  it('respects topK when truncating post-rerank results', async () => {
     vi.mocked(bm25.searchSparse).mockResolvedValue([
       { id: 'a', score: 0.9 },
       { id: 'b', score: 0.8 },
@@ -105,5 +119,53 @@ describe('retrieve', () => {
     const result = await retrieve('query', 2, { pool, ai: mockAi });
 
     expect(result.chunks).toHaveLength(2);
+  });
+
+  it('reranks the full candidate pool and reorders results by rerank score', async () => {
+    vi.mocked(bm25.searchSparse).mockResolvedValue([
+      { id: 'rrf-first', score: 0.9 },
+      { id: 'rrf-second', score: 0.1 },
+    ]);
+    vi.mocked(ann.searchDense).mockResolvedValue([]);
+    vi.mocked(rerankModule.rerank).mockResolvedValue([
+      { id: 'rrf-second', rerankScore: 0.99 },
+      { id: 'rrf-first', rerankScore: 0.1 },
+    ]);
+    const pool = makeMockPool({
+      'rrf-first': makeChunkRow('rrf-first'),
+      'rrf-second': makeChunkRow('rrf-second'),
+    });
+
+    const result = await retrieve('query', 5, { pool, ai: mockAi });
+
+    expect(result.degraded).toBe(false);
+    expect(result.chunks[0].id).toBe('rrf-second'); // reranker inverted the RRF order
+    expect(result.chunks[0].rerankScore).toBe(0.99);
+  });
+
+  it('falls back to RRF-only order and marks degraded when the reranker fails', async () => {
+    vi.mocked(bm25.searchSparse).mockResolvedValue([{ id: 'a', score: 0.9 }]);
+    vi.mocked(ann.searchDense).mockResolvedValue([]);
+    vi.mocked(rerankModule.rerank).mockRejectedValue(new Error('model load failed'));
+    const pool = makeMockPool({ a: makeChunkRow('a') });
+
+    const result = await retrieve('query', 5, { pool, ai: mockAi });
+
+    expect(result.degraded).toBe(true);
+    expect(result.degradedReasons).toContain('reranker_failed');
+    expect(result.chunks).toHaveLength(1);
+    expect(result.chunks[0].id).toBe('a');
+    expect(result.chunks[0].rerankScore).toBeNull();
+  });
+
+  it('reports both failures when dense search and reranker both fail', async () => {
+    vi.mocked(bm25.searchSparse).mockResolvedValue([{ id: 'a', score: 0.9 }]);
+    vi.mocked(ann.searchDense).mockRejectedValue(new Error('embed failed'));
+    vi.mocked(rerankModule.rerank).mockRejectedValue(new Error('model load failed'));
+    const pool = makeMockPool({ a: makeChunkRow('a') });
+
+    const result = await retrieve('query', 5, { pool, ai: mockAi });
+
+    expect(result.degradedReasons).toEqual(['dense_search_failed', 'reranker_failed']);
   });
 });
